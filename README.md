@@ -1,6 +1,6 @@
 # nlb-baselines: co-smoothing on MC_Maze
 
-Four models applied to the [Neural Latents Benchmark '21](https://arxiv.org/abs/2109.04463) MC_Maze co-smoothing task, evaluated on the validation split. Not state-of-the-art; the goal is a working end-to-end pipeline and a clean read on how four qualitatively different modeling approaches compare on the same held-out neurons.
+Four classical models applied to the [Neural Latents Benchmark '21](https://arxiv.org/abs/2109.04463) MC_Maze co-smoothing task, evaluated on the validation split. The goal is a working end-to-end pipeline and a clean read on how qualitatively different modeling approaches compare on the same held-out neurons. **[EXTENSION.md](EXTENSION.md)** carries the same task forward to a transformer (which beats all four) and to the modern live benchmark, FALCON, with a neural foundation model (NDT3).
 
 ## Results (MC_Maze val, 5 ms bins)
 
@@ -10,8 +10,12 @@ Four models applied to the [Neural Latents Benchmark '21](https://arxiv.org/abs/
 | GPFA (latent_dim=52) | 0.1868 | **0.6403** |
 | GRU-v1 (2×128, 200 ep) | **0.2328** | 0.5741 |
 | GRU-v2 (2×192, 500 ep, cosine, wd 1e-5) | 0.2235 | 0.6021 |
+| **Masked transformer (v4: 6L, d=128)** | **0.3142** | **0.8235** |
+| Causal (AR) transformer | 0.2712 | 0.7826 |
 
-**GRU-v1 wins the primary metric.** GPFA wins velocity decoding. GRU-v2 gets a lower training loss than v1 (val Poisson-NLL 0.0344 vs 0.0370) but a worse co-bps — lower loss doesn't translate to better held-out-neuron rate quality.
+**Among the four classical baselines, GRU-v1 wins the primary metric** and GPFA wins velocity decoding; GRU-v2 gets a lower training loss than v1 (val Poisson-NLL 0.0344 vs 0.0370) but a worse co-bps — lower loss doesn't translate to better held-out-neuron rate quality.
+
+**A transformer beats all four on both metrics at once** (+35% co-bps over GRU-v1), breaking the smoothness-vs-sharpness trade-off the classical models sit on. A causal (streaming) variant costs ~14% co-bps but still tops every classical baseline. Details, a foundation-model (NDT3) comparison on the live FALCON benchmark, and reproduction commands are in **[EXTENSION.md](EXTENSION.md)**.
 
 ![Trial-averaged predicted rate for a sample heldout neuron, all four models](figs/rates_sample_neuron.png)
 
@@ -88,7 +92,18 @@ GRU_CONFIG=v1 python baselines/run_gru_mc_maze.py    # GRU-v1
 GRU_CONFIG=v2 python baselines/run_gru_mc_maze.py    # GRU-v2
 ```
 
-Each writes rate tensors to `outputs/mc_maze_{model}_output_val.h5` and prints `nlb_tools.evaluation.evaluate` at the end. **~8 GB RAM required** to load the NWB — MC_Maze is not workable on a machine smaller than that (bin size doesn't help; resample runs after load).
+The four classical runners each write rate tensors to `outputs/mc_maze_{model}_output_val.h5` and print `nlb_tools.evaluation.evaluate` at the end.
+
+For the transformers (see [EXTENSION.md](EXTENSION.md)):
+
+```
+python baselines/prep_tensors_mc_maze.py             # one-time: bake tensors → data/mc_maze_5ms.npz
+MT_CONFIG=v4 python baselines/run_masked_transformer_mc_maze.py   # masked transformer (v1–v5)
+python baselines/run_ar_transformer_mc_maze.py       # causal (AR) transformer
+python eval_all_mt.py                                # score all transformer outputs
+```
+
+**~8 GB RAM required** to load the NWB — MC_Maze is not workable on a machine smaller than that (bin size doesn't help; resample runs after load).
 
 **Figure:**
 
@@ -108,11 +123,13 @@ python make_fig_rates.py    # writes figs/rates_sample_neuron.png
 ## Repo layout
 
 ```
-baselines/          # per-model runners
-data/               # (gitignored) DANDI NWB downloads
+baselines/          # per-model runners (classical + transformers + prep_tensors)
+data/               # (gitignored) DANDI NWB downloads + baked tensor npz
 outputs/            # (gitignored) rate h5s produced by each runner
 figs/               # figures (committed)
 make_fig_rates.py   # generate figs/rates_sample_neuron.png from outputs/*.h5
+eval_all_mt.py      # score all transformer outputs/*.h5 against MC_Maze val targets
+EXTENSION.md        # transformers on MC_Maze + FALCON/NDT3 foundation-model write-up
 requirements.txt
 ```
 
@@ -131,9 +148,10 @@ Encountered while building this out; documenting so the next person doesn't lose
 
 ## Open
 
-- Transformer / TCN / NDT on the same task — probably the next thing worth trying for co-bps.
-- Same four models on `mc_rtt`, `area2_bump`, `dmfc_rsg` — check whether the smoothing vs sharpness pattern is dataset-specific or general.
+- ~~Transformer / TCN / NDT on the same task~~ — done: masked + causal transformers beat all four classical baselines; see [EXTENSION.md](EXTENSION.md). TCN and a from-scratch NDT remain untried.
+- Same models on `mc_rtt`, `area2_bump`, `dmfc_rsg` — check whether the smoothing vs sharpness pattern is dataset-specific or general.
 - co-bps-directed loss (train against held-out neurons directly) rather than Poisson NLL over all neurons.
+- VQ-VAE codebook + transformer over spike tokens (predict next codebook token, derive co-bps via expected count) — no published NLB spike baseline; genuinely open.
 
 ## Citation
 
