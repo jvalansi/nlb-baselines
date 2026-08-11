@@ -3,7 +3,7 @@
 The four MC_Maze baselines in the [README](README.md) are a 2021-era snapshot: classical co-smoothing (smoothing, GPFA, GRUs). This extension carries the same task forward two steps:
 
 - **Part 1** — a **transformer** on the identical MC_Maze co-smoothing task. It beats every classical baseline on *both* metrics, breaking the smoothness-vs-sharpness trade-off the baseline section identified. A causal variant quantifies the cost of giving up future context — which sets up why the field's live benchmark demands it.
-- **Part 2** — **FALCON**, the live benchmark for *streaming, cross-session* intracortical decoding, and what a modern neural foundation model (NDT3) does on it, honestly scored. The short version: the pretrained NDT3 checkpoint is already at its ceiling on FALCON H1's held-in split; fine-tuning does not beat it. The contribution there is a working end-to-end fine-tune + local-scoring + streaming-decode pipeline, six decoder bug-fixes that surfaced only when the decode path was actually exercised, and an honest read on what does and doesn't move the metric.
+- **Part 2** — **FALCON**, the live benchmark for *streaming, cross-session* intracortical decoding, and what a modern neural foundation model (NDT3) does on it, honestly scored. The short version: on FALCON H1's public test leaderboard our fine-tune places **~5th of 13** (cross-day held-out R² 0.556), just below NDT3's own entry — and the untouched pretrained checkpoint scores within noise of it (0.548), so on this dataset fine-tuning does not robustly beat the pretrained baseline. The contribution there is a working end-to-end fine-tune + local-scoring + streaming-decode pipeline, six decoder bug-fixes that surfaced only when the decode path was actually exercised, and an honest read on what does and doesn't move the metric.
 
 ---
 
@@ -53,7 +53,7 @@ The masked transformer above is still the NLB'21 world: batch, non-causal, singl
 - **NLB'21** (co-smoothing on MC_Maze, as in the README): predict held-out *neuron rates* from held-in neurons, whole trial visible at once (non-causal), single session, one monkey. As of **January 2026 the EvalAI challenge no longer accepts submissions** — the organizers can no longer host it, so no new model can appear on the public leaderboard ([NLB challenge guidelines](https://neurallatents.github.io/challenge.html)).
 - **FALCON** — *Few-shot Algorithms for Consistent Neural Decoding* ([Karpowicz et al., NeurIPS 2024](https://proceedings.neurips.cc/paper_files/paper/2024/file/8c2e6bb15be1894b8fb4e0f9bcad1739-Paper-Datasets_and_Benchmarks_Track.pdf); [bioRxiv 2024.09.15.613126](https://www.biorxiv.org/content/10.1101/2024.09.15.613126v1)), EvalAI challenge 2319. Predict *behavior* from spikes under **causal streaming inference** (no future context), across **multiple session-days**, with a **few-shot recalibration** protocol targeting the nonstationarity that forces real iBCIs to recalibrate. Five datasets: **H1** human reach & grasp, **H2** human handwriting, **M1** monkey reach & grasp, **M2** monkey finger movement, **B1** birdsong.
 
-The axis that matters for real iBCI: FALCON scores **held-out** (cross-day) sessions, because the deployment problem is a decoder that keeps working on a day it was never calibrated on. That is the number the leaderboard ranks, and — see the caveat below — the number we could not obtain.
+The axis that matters for real iBCI: FALCON scores **held-out** (cross-day) sessions, because the deployment problem is a decoder that keeps working on a day it was never calibrated on. That is the number the leaderboard ranks, and — after a months-long EvalAI outage — the number we finally obtained (see [The held-out placement](#the-held-out-placement)).
 
 ## The model: NDT3
 
@@ -92,11 +92,24 @@ NDT3's default fine-tune LR (4e-4) overshoots the pretrained optimum on a small 
 | 4e-5 | 0.5995 |
 | **1e-5** | **0.6082** |
 
-## The caveat that gates everything: held-out is unavailable
+## The held-out placement
 
-Every number above is **held-in**. The leaderboard ranks **held-out** (cross-day) sessions, whose data files are server-side only — the only way to that number is to submit to EvalAI and be scored. Throughout this work the challenge's evaluation queue was not scoring our submissions ([snel-repo/falcon-challenge#32](https://github.com/snel-repo/falcon-challenge/issues/32)), so we validated locally on held-in data instead.
+Every number above is **held-in** — it answers "does the decoder work on a session-day it was calibrated on." The number that *ranks* the leaderboard is **held-out**: cross-day sessions whose data files are server-side only, reachable only by submitting to EvalAI and being scored. For most of this work the challenge's evaluation queue was not scoring our submissions at all ([snel-repo/falcon-challenge#32](https://github.com/snel-repo/falcon-challenge/issues/32)), so we validated locally on held-in data. When the queue came back online, both entries scored on the H1 test phase:
 
-So the honest boundary — stated as a property of the result, not an excuse: **this is a held-in number. It validates the decode pipeline and reflects same-session performance; it is not a cross-day placement, and the held-out number that would rank us is the honest gap we cannot yet fill.**
+| Model (H1 test phase) | Held-Out R² (ranked) | Held-In R² | norm. latency |
+|---|---:|---:|---:|
+| `base_45m_1kh`, our LR=1e-5 fine-tune (public) | **0.556 ± 0.090** | 0.660 ± 0.025 | 0.075 |
+| `base_45m_1kh`, pretrained (untouched HF ckpt) | 0.548 ± 0.094 | 0.670 ± 0.025 | — |
+| official `ndt3` team entry | 0.574 | — | — |
+
+The fine-tune ranks **~5th of 13** on the public H1 test board — clearing SPINT, Credasis AI, and most FALCON baseline variants, sitting just below NDT3's own entry. (Note these test-phase held-in numbers, ~0.66, are a *different split* from the minival held-in ~0.89 above and are not comparable to it.)
+
+Two readings, both consistent with the held-in story:
+
+1. **Fine-tuning still does not robustly beat pretrained.** The fine-tune edges the untouched checkpoint by +0.008 held-out (0.556 vs 0.548) — the *opposite* direction from minival (−0.0006), and well inside the ±0.09 std. Across both splits the honest read is a wash: on H1, pretrained NDT3 is already at its ceiling.
+2. **The ~0.02 gap to NDT3's own entry is not our fine-tune underperforming.** The untouched pretrained checkpoint *also* trails the official `ndt3` entry (0.548 vs 0.574), so that entry used a stronger config or checkpoint than the public `base_45m_1kh` — it is not a deficit introduced by our fine-tuning.
+
+So the honest boundary, now closed: the held-in 0.890 validated the decode pipeline; the held-out 0.556 is the deployment-relevant, leaderboard-ranked placement — and it confirms rather than overturns the held-in read.
 
 ## What actually took the work: the decode path
 
@@ -122,7 +135,7 @@ Continuing the README's gotchas section, for the next person fine-tuning NDT3:
 
 3. **A foundation model can be at its ceiling before you touch it.** On a small held-in calibration set, a well-pretrained checkpoint may already saturate the metric; a fine-tune "win" on your own carve-out can be pure selection noise. Always score the untouched checkpoint through the identical evaluator as your standing baseline — a fine-tune number without it is meaningless.
 4. **Bigger overfits small calibration sets.** 45M beat 350M on H1's ~170 held-in trials. Match capacity to calibration data, not to pretraining budget.
-5. **A metric you can't obtain is not a metric.** The held-in 0.890 is honest and reproducible; it is also *not* the number that matters for deployment (cross-day held-out). Be explicit about which number you have.
+5. **Hold the honest held-in number until the held-out one lands — then report both.** The held-in 0.890 is honest and reproducible but is *not* the deployment metric (cross-day held-out); reporting it alone would have overstated the result. The held-out placement (0.556, ~5th/13) is the one that ranks — and it confirmed the held-in read: fine-tuning doesn't beat pretrained on H1. Always be explicit about which split every number is on.
 
 ## Reproducibility
 
@@ -148,7 +161,7 @@ python eval_all_mt.py
 
 (Config names in the sweep table map to the `MT_CONFIG` env var; check the top of `run_masked_transformer_mc_maze.py` for the exact hyperparameters each selects.)
 
-**Part 2 (FALCON/NDT3) is not vendored here** — see the scope note above. To reproduce: fine-tune a `base_45m_1kh` checkpoint from [`joel99/ndt3`](https://huggingface.co/joel99/ndt3) on FALCON H1 at LR 1e-5, and score it with the official [`falcon_challenge`](https://github.com/snel-repo/falcon-challenge) evaluator in local mode (`--evaluation local --phase minival`). Always score the untouched pretrained checkpoint through the same evaluator as your baseline (Lesson 3).
+**Part 2 (FALCON/NDT3) is not vendored here** — see the scope note above. To reproduce: fine-tune a `base_45m_1kh` checkpoint from [`joel99/ndt3`](https://huggingface.co/joel99/ndt3) on FALCON H1 at LR 1e-5, and score it with the official [`falcon_challenge`](https://github.com/snel-repo/falcon-challenge) evaluator in local mode (`--evaluation local --phase minival`) for the held-in number, then submit to the EvalAI `test` phase for the ranked held-out placement. Always score the untouched pretrained checkpoint through the same evaluator as your baseline (Lesson 3).
 
 ## Citation
 
