@@ -3,7 +3,7 @@
 The four MC_Maze baselines in the [README](README.md) are a 2021-era snapshot: classical co-smoothing (smoothing, GPFA, GRUs). This extension carries the same task forward two steps:
 
 - **Part 1** — a **transformer** on the identical MC_Maze co-smoothing task. It beats every classical baseline on *both* metrics, breaking the smoothness-vs-sharpness trade-off the baseline section identified. A causal variant quantifies the cost of giving up future context — which sets up why the field's live benchmark demands it.
-- **Part 2** — **FALCON**, the live benchmark for *streaming, cross-session* intracortical decoding, and what a modern neural foundation model (NDT3) does on it, honestly scored. The short version: on FALCON H1's public test leaderboard our fine-tune places **~5th of 13** (cross-day held-out R² 0.556), just below NDT3's own entry — and the untouched pretrained checkpoint scores within noise of it (0.548), so on this dataset fine-tuning does not robustly beat the pretrained baseline. The contribution there is a working end-to-end fine-tune + local-scoring + streaming-decode pipeline, six decoder bug-fixes that surfaced only when the decode path was actually exercised, and an honest read on what does and doesn't move the metric.
+- **Part 2** — **FALCON**, the live benchmark for *streaming, cross-session* intracortical decoding, and what a modern neural foundation model (NDT3) does on it, honestly scored. The short version: on FALCON H1's public test leaderboard our fine-tune placed **~5th of 13** at submission (cross-day held-out R² 0.556; 8th of 18 as of 2026-10-05 as newer entries arrived), just below NDT3's own entry — and the untouched pretrained checkpoint scores within noise of it (0.548), so on this dataset fine-tuning does not robustly beat the pretrained baseline. The contribution there is a working end-to-end fine-tune + local-scoring + streaming-decode pipeline, six decoder bug-fixes that surfaced only when the decode path was actually exercised, and an honest read on what does and doesn't move the metric.
 
 ---
 
@@ -102,7 +102,7 @@ Every number above is **held-in** — it answers "does the decoder work on a ses
 | `base_45m_1kh`, pretrained (untouched HF ckpt) | 0.548 ± 0.094 | 0.670 ± 0.025 | — |
 | official `ndt3` team entry | 0.574 | — | — |
 
-The fine-tune ranks **~5th of 13** on the public H1 test board — clearing SPINT, Credasis AI, and most FALCON baseline variants, sitting just below NDT3's own entry. (Note these test-phase held-in numbers, ~0.66, are a *different split* from the minival held-in ~0.89 above and are not comparable to it.)
+The fine-tune ranked **~5th of 13** on the public H1 test board at submission (8th of 18 as of 2026-10-05) — clearing SPINT, Credasis AI, and most FALCON baseline variants, sitting just below NDT3's own entry. (Note these test-phase held-in numbers, ~0.66, are a *different split* from the minival held-in ~0.89 above and are not comparable to it.)
 
 Two readings, both consistent with the held-in story:
 

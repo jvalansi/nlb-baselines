@@ -56,10 +56,11 @@ DROPOUT = C["dropout"]
 LR, WD, BATCH_SIZE, EPOCHS = C["lr"], C["wd"], C["batch"], C["epochs"]
 WARMUP, MIN_LR = C["warmup"], C["min_lr"]
 VAL_SPLIT = 0.1
-SEED = 0
+SEED = 0  # val split
+TORCH_SEED = int(os.getenv("AR_SEED", "0"))  # init + batch order; split stays fixed
 
 NPZPATH = Path(__file__).resolve().parents[1] / "data" / f"{DATASET_NAME}_{BIN_SIZE_MS}ms.npz"
-SAVEPATH = Path(__file__).resolve().parents[1] / "outputs" / f"{OUTPUT_KEY}_ar_{CONFIG}_output_{PHASE}.h5"
+SAVEPATH = Path(__file__).resolve().parents[1] / "outputs" / f"{OUTPUT_KEY}_ar_{CONFIG}{'' if TORCH_SEED == 0 else f'_s{TORCH_SEED}'}_output_{PHASE}.h5"
 
 
 class ARTransformer(nn.Module):
@@ -94,7 +95,7 @@ def shift_right(x):
 
 
 def main():
-    torch.manual_seed(SEED)
+    torch.manual_seed(TORCH_SEED)
     np.random.seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}")
@@ -194,7 +195,7 @@ def main():
         for name, arr in output_dict[OUTPUT_KEY].items():
             g.create_dataset(name, data=arr)
     print(f"Wrote {SAVEPATH}")
-    print("Next: score all transformer outputs with: python eval_all_mt.py")
+    print("Next: score all outputs with: python eval_all_mt.py")
 
 
 if __name__ == "__main__":

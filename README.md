@@ -12,10 +12,12 @@ Four classical models applied to the [Neural Latents Benchmark '21](https://arxi
 | GRU-v2 (2×192, 500 ep, cosine, wd 1e-5) | 0.2235 | 0.6021 |
 | **Masked transformer (v4: 6L, d=128)** | **0.3142** | **0.8235** |
 | Causal (AR) transformer | 0.2712 | 0.7826 |
+| Spike-token transformer (causal, K=256 learned units) | 0.2995 | 0.8470 |
+| Poisson HMM (K=256, causal) | 0.2718 | 0.7627 |
 
 **Among the four classical baselines, GRU-v1 wins the primary metric** and GPFA wins velocity decoding; GRU-v2 gets a lower training loss than v1 (val Poisson-NLL 0.0344 vs 0.0370) but a worse co-bps — lower loss doesn't translate to better held-out-neuron rate quality.
 
-**A transformer beats all four on both metrics at once** (+35% co-bps over GRU-v1), breaking the smoothness-vs-sharpness trade-off the classical models sit on. A causal (streaming) variant costs ~14% co-bps but still tops every classical baseline. Details, a foundation-model (NDT3) comparison on the live FALCON benchmark, and reproduction commands are in **[EXTENSION.md](EXTENSION.md)**.
+**A transformer beats all four on both metrics at once** (+35% co-bps over GRU-v1), breaking the smoothness-vs-sharpness trade-off the classical models sit on. A causal (streaming) variant costs ~14% co-bps but still tops every classical baseline. Details, a foundation-model (NDT3) comparison on the live FALCON benchmark, and reproduction commands are in **[EXTENSION.md](EXTENSION.md)**. **[TOKENS.md](TOKENS.md)** discretizes the population state into 256 learned tokens: the token model is the best causal model here, and a CE-vs-Poisson ablation shows the gain comes from the cross-entropy target rather than the discrete bottleneck (3-seed means).
 
 ![Trial-averaged predicted rate for a sample heldout neuron, all four models](figs/rates_sample_neuron.png)
 
@@ -123,13 +125,14 @@ python make_fig_rates.py    # writes figs/rates_sample_neuron.png
 ## Repo layout
 
 ```
-baselines/          # per-model runners (classical + transformers + prep_tensors)
+baselines/          # per-model runners (classical + transformers + tokens/HMM + prep_tensors)
 data/               # (gitignored) DANDI NWB downloads + baked tensor npz
 outputs/            # (gitignored) rate h5s produced by each runner
 figs/               # figures (committed)
 make_fig_rates.py   # generate figs/rates_sample_neuron.png from outputs/*.h5
-eval_all_mt.py      # score all transformer outputs/*.h5 against MC_Maze val targets
+eval_all_mt.py      # score transformer / token / HMM outputs/*.h5 against MC_Maze val targets
 EXTENSION.md        # transformers on MC_Maze + FALCON/NDT3 foundation-model write-up
+TOKENS.md           # spike tokens + CE-vs-Poisson ablation + Poisson HMM on MC_Maze
 requirements.txt
 ```
 
@@ -151,7 +154,7 @@ Encountered while building this out; documenting so the next person doesn't lose
 - ~~Transformer / TCN / NDT on the same task~~ — done: masked + causal transformers beat all four classical baselines; see [EXTENSION.md](EXTENSION.md). TCN and a from-scratch NDT remain untried.
 - Same models on `mc_rtt`, `area2_bump`, `dmfc_rsg` — check whether the smoothing vs sharpness pattern is dataset-specific or general.
 - co-bps-directed loss (train against held-out neurons directly) rather than Poisson NLL over all neurons.
-- VQ-VAE codebook + transformer over spike tokens (predict next codebook token, derive co-bps via expected count) — no published NLB spike baseline; genuinely open.
+- ~~VQ-VAE codebook + transformer over spike tokens~~ — done, see [TOKENS.md](TOKENS.md). Open from there: a continuous student distilled on the tokenizer's rates, to separate "cross-entropy on tokens" from "distillation".
 
 ## Citation
 
