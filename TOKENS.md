@@ -4,7 +4,9 @@ Large language models work over a discrete vocabulary. Neural foundation models 
 
 **If every 5 ms population state is forced through one of K prototypes, and a causal transformer predicts the next prototype as a token, how much co-bps / vel R² is lost against the same transformer predicting continuous rates?**
 
-Short answer: nothing is lost. A pure token language model beats the continuous model by +0.014 co-bps, and a raw-spike → token model by +0.029. But the ablation below shows the gain comes from **the cross-entropy training target, not from the discrete bottleneck**. When the same discrete head is trained on Poisson NLL instead, it lands exactly on the continuous baseline. A plain Poisson HMM, the 1990s discrete-state model, also matches the continuous causal transformer on co-bps.
+> **Revised 2026-10-09.** The original read below said the gain came from the cross-entropy target. A distillation control (results table, `dist_*` rows; §What it shows, point 3) shows it is the **soft target**: a plain continuous transformer, no tokens and no cross-entropy, trained on Poisson NLL against the tokenizer's prototype rates `mu[z_t]` scores **0.3117 ± 0.0013**, above every token model. The original text is kept as first published, with the corrections marked inline.
+
+Short answer: nothing is lost. A pure token language model beats the continuous model by +0.014 co-bps, and a raw-spike → token model by +0.029. But the ablation below shows the gain comes from **the cross-entropy training target, not from the discrete bottleneck**. *(Revised 2026-10-09: from training on the tokenizer's soft targets instead of raw counts - cross-entropy on tokens is one way to do that, not the cause.)* When the same discrete head is trained on Poisson NLL instead, it lands exactly on the continuous baseline. A plain Poisson HMM, the 1990s discrete-state model, also matches the continuous causal transformer on co-bps.
 
 All numbers are on the MC_Maze **validation** split (5 ms bins) and scored with `nlb_tools.evaluation.evaluate`, like the rest of the repo. Where a row says "3 seeds", it is mean ± std over init and batch order with the val split held fixed.
 
@@ -19,6 +21,7 @@ Every model below shares the causal (autoregressive) transformer from [EXTENSION
 - `out`: raw heldin spikes (shifted, so ≤ t−1) → logits over K. Then `rates_t = softmax(logits_t) @ mu`.
 - `inout`: one-hot tokens in, logits over K out. A pure spike-token LM.
 - `*_pois`: identical network, head and `mu`, but trained on Poisson NLL of `softmax(logits) @ mu` against the counts instead of cross-entropy on the next token. **This is the ablation.**
+- `dist_ae` / `dist_mu` (added 2026-10-09): the continuous AR baseline (softplus head, no tokens), input heldin ≤ t−1, trained on Poisson NLL against soft targets instead of counts: the unquantized autoencoder's rates at t (`dist_ae`) or the current token's prototype rates `mu[z_t]` (`dist_mu`). Checkpoint selection still uses val NLL on real counts. **This is the distillation control.**
 
 The AR baseline is the same backbone with a continuous softplus head, trained on Poisson NLL.
 
@@ -33,6 +36,8 @@ The AR baseline is the same backbone with a continuous softplus head, trained on
 | `inout_pois`, same head, Poisson NLL | tokens ≤ t−1 | 0.2636 ± 0.0002 | 0.786 |
 | Tokenizer's own autoencoder, unquantized | heldin ≤ t | 0.2872 ± 0.0008 | 0.837 |
 | `lookup` (prototype of the current token) | heldin ≤ t | 0.2292 ± 0.0054 | 0.808 |
+| `dist_ae`: continuous, Poisson on the autoencoder's rates | heldin ≤ t−1 | 0.2908 ± 0.0013 | 0.853 |
+| `dist_mu`: continuous, Poisson on prototype rates `mu[z_t]` | heldin ≤ t−1 | **0.3117 ± 0.0013** | **0.855** |
 
 Discrete-state baseline, a **Poisson HMM** (`run_hmm_mc_maze.py`: Baum-Welch, k-means init, checkpoint on val heldout NLL, heldout emissions marginalized at inference). Single run:
 
@@ -52,9 +57,16 @@ Tokenizer K sweep (`out` / `inout`, single seed): K=64 gives 0.2795 / 0.2703, K=
 
 1. **The discrete bottleneck is not where the cost is.** A transformer that only ever sees and emits one of 256 tokens per 5 ms bin (`inout`) beats the same transformer on continuous spikes (0.2847 vs 0.2703; seed std ≤ 0.0011 on both). A raw-spike → token model is the best causal model in this repo on both metrics (0.2995 / 0.847).
 
-2. **The gain comes from the training target.** With identical networks, heads and prototype rates, swapping cross-entropy for Poisson NLL costs 0.030 co-bps on `out` and 0.021 on `inout`. The Poisson-trained discrete head lands on the continuous baseline (0.2699 vs 0.2703). Under Poisson training, the softmax-over-prototypes head is just a constrained rate head, and it does no better than an unconstrained one. NDT3 names CE vs Poisson as untested. This is that test, in one setting.
+2. **The gain comes from the training target.** *(Revised 2026-10-09: the target, yes, but not cross-entropy - see point 3.)* With identical networks, heads and prototype rates, swapping cross-entropy for Poisson NLL costs 0.030 co-bps on `out` and 0.021 on `inout`. The Poisson-trained discrete head lands on the continuous baseline (0.2699 vs 0.2703). Under Poisson training, the softmax-over-prototypes head is just a constrained rate head, and it does no better than an unconstrained one. NDT3 names CE vs Poisson as untested. This is that test, in one setting.
 
-3. **Why cross-entropy helps is a hypothesis, not a result.** The tokens are targets produced by an autoencoder that was trained to predict heldout neurons. Cross-entropy on those tokens therefore regresses onto a denoised summary of the whole population, where Poisson NLL regresses onto sparse 5 ms counts. Read that way, it is closer to distillation than to "discreteness helps". One observation fits: the `out` student (heldin ≤ t−1) beats its own unquantized teacher (heldin ≤ t, 0.2872) while seeing one bin *less*. Not tested here:
+3. **Update 2026-10-09: it is distillation, tested.** A continuous student with no tokens and no cross-entropy, trained on Poisson NLL against soft targets, matches or beats every token model:
+   - On the autoencoder's continuous rates (`dist_ae`): 0.2908, +0.021 over the same network on counts, and above its own teacher (0.2872).
+   - On the quantized prototype rates `mu[z_t]` (`dist_mu`): **0.3117 / 0.855**, +0.041 over counts, +0.012 over `out`, and level with the acausal masked transformer v4 (0.3142, single seed) while staying causal.
+   - So what matters is the target (teacher rates vs sparse 5 ms counts), not the loss family. Discretization still contributes, as a *better target* (+0.021 for `mu[z_t]` over the unquantized teacher), not as a better output head. Why quantized targets distill better is untested; one candidate is that per-cluster means average out the teacher's per-bin noise.
+   - Still untested: the two-stage compute budget, and whether the teacher's heldout supervision is what carries the effect.
+
+   Original point 3, as first published:
+   **Why cross-entropy helps is a hypothesis, not a result.** The tokens are targets produced by an autoencoder that was trained to predict heldout neurons. Cross-entropy on those tokens therefore regresses onto a denoised summary of the whole population, where Poisson NLL regresses onto sparse 5 ms counts. Read that way, it is closer to distillation than to "discreteness helps". One observation fits: the `out` student (heldin ≤ t−1) beats its own unquantized teacher (heldin ≤ t, 0.2872) while seeing one bin *less*. Not tested here:
    - a continuous student distilled on the teacher's rates;
    - the extra compute of two-stage training (the tokenizer adds a full training run);
    - whether the tokens' heldout content (the teacher was trained with heldout targets) is what carries the effect.
@@ -84,7 +96,7 @@ for s in 0 1 2; do AR_SEED=$s python baselines/run_ar_transformer_mc_maze.py; do
 
 # token models + CE-vs-Poisson ablation, 3 seeds (also writes the unquantized-autoencoder control)
 for s in 0 1 2; do
-  VQ_TOKENIZER=aekmeans VQ_K=256 VQ_MODE=lookup,out,inout,out_pois,inout_pois VQ_SEED=$s \
+  VQ_TOKENIZER=aekmeans VQ_K=256 VQ_MODE=lookup,out,inout,out_pois,inout_pois,dist_ae,dist_mu VQ_SEED=$s \
     python baselines/run_vq_ar_transformer_mc_maze.py
 done
 

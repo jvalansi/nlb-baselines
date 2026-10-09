@@ -34,6 +34,12 @@ Modes (VQ_MODE, comma-separated; one h5 per mode x K):
           CE-vs-Poisson ablation: same input, network and mixture head
           softmax(logits_t) @ mu, but trained on Poisson NLL of those rates
           against the counts instead of CE on the tokenizer's next token.
+  dist_ae / dist_mu (aekmeans only)
+          Distillation control for `out`: the continuous AR model (softplus head
+          over Hi+Ho, no tokens) trained on Poisson NLL against soft targets -
+          the unquantized AE's rates at t (dist_ae) or the token prototype
+          mu[z_t] (dist_mu) - instead of the counts. If dist_ae matches `out`,
+          the gain is distillation from the AE, not CE on discrete tokens.
 
 Training (out / inout): cross-entropy on the next token. Checkpoint selected by
 val Poisson NLL of the mixture rates (the quantity co-bps scores).
@@ -333,6 +339,47 @@ def train_lm(mode, K, x_in_all, z_all, mu, y_all, tr_idx, val_idx, x_in_eval, de
     return tr, ev
 
 
+def train_student(mode, x_all, target, y_all, tr_idx, val_idx, x_eval, device):
+    """Continuous AR model fit to soft targets (Poisson NLL vs teacher rates); checkpoint by
+    val Poisson NLL against the real counts, as for every other model. Returns numpy rates."""
+    torch.manual_seed(TORCH_SEED)
+    n_out, T = y_all.shape[2], x_all.shape[1]
+    model = ARTransformer(x_all.shape[2], n_out, T, C["d_model"], C["n_layers"], C["n_heads"],
+                          C["ffn"], C["dropout"]).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=C["lr"], weight_decay=C["wd"])
+    bs, epochs = C["batch"], C["epochs"]
+    n_batches = int(np.ceil(len(tr_idx) / bs))
+    sched = cosine_schedule(opt, n_batches * epochs)
+    x_val, y_val = x_all[val_idx], y_all[val_idx]
+    best, best_state = float("inf"), None
+    for epoch in range(epochs):
+        model.train()
+        perm = tr_idx[torch.randperm(len(tr_idx), device=device)]
+        tl = 0.0
+        for b in range(n_batches):
+            idx = perm[b * bs:(b + 1) * bs]
+            loss = poisson_nll_elementwise(model(shift_right(x_all[idx])), target[idx]).mean()
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            sched.step()
+            tl += loss.item() * len(idx)
+        model.eval()
+        with torch.no_grad():
+            val_nll = poisson_nll_elementwise(model(shift_right(x_val)), y_val).mean().item()
+        if val_nll < best:
+            best = val_nll
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if epoch % 10 == 0 or epoch == epochs - 1:
+            print(f"[{mode}] epoch {epoch:3d}  train_loss {tl/len(tr_idx):.4f}  val_nll {val_nll:.4f}  "
+                  f"best {best:.4f}  lr {opt.param_groups[0]['lr']:.2e}", flush=True)
+    model.load_state_dict(best_state)
+    model.eval()
+    with torch.no_grad():
+        return model(shift_right(x_all)).cpu().numpy(), model(shift_right(x_eval)).cpu().numpy()
+
+
 def main():
     np.random.seed(SEED)
     torch.manual_seed(TORCH_SEED)
@@ -378,8 +425,10 @@ def main():
                 h_ev = torch.cat([ae.encode(xe[i:i + 256]) for i in range(0, len(xe), 256)]).reshape(-1, CODE_DIM)
                 # Control: the same network, unquantized - the ceiling for its tokens.
                 cont = {n: torch.cat([nn.functional.softplus(ae.dec(ae.encode(xx[i:i + 256])))
-                                      for i in range(0, len(xx), 256)]).cpu().numpy()
+                                      for i in range(0, len(xx), 256)])
                         for n, xx in (("tr", xt), ("ev", xe))}
+            teacher = cont["tr"]  # dist_ae target
+            cont = {n: v.cpu().numpy() for n, v in cont.items()}
             write_h5(DIR / f"{OUTPUT_KEY}_vq_cont_k{K}_aekmeans{'' if CONFIG == 'v1' else '_' + CONFIG}{'' if TORCH_SEED == 0 else f'_s{TORCH_SEED}'}_output_{PHASE}.h5", cont["tr"], cont["ev"], n_heldin)
             del ae, cont
             cent = kmeans(h_tr, K, KMEANS_ITERS, device)
@@ -404,6 +453,11 @@ def main():
                 oh_tr = nn.functional.one_hot(z_train, K).float()
                 oh_ev = nn.functional.one_hot(z_eval, K).float()
                 tr, ev = train_lm(mode, K, oh_tr, z_train, mu, yt, tr_idx, val_idx, oh_ev, device)
+            elif mode in ("dist_ae", "dist_mu"):
+                if TOKENIZER != "aekmeans":
+                    raise ValueError(f"{mode} needs VQ_TOKENIZER=aekmeans")
+                target = teacher if mode == "dist_ae" else mu[z_train]
+                tr, ev = train_student(mode, xt, target, yt, tr_idx, val_idx, xe, device)
             else:
                 raise ValueError(f"unknown VQ_MODE {mode}")
             write_h5(path, tr, ev, n_heldin)
