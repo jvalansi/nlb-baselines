@@ -40,6 +40,11 @@ Modes (VQ_MODE, comma-separated; one h5 per mode x K):
           the unquantized AE's rates at t (dist_ae) or the token prototype
           mu[z_t] (dist_mu) - instead of the counts. If dist_ae matches `out`,
           the gain is distillation from the AE, not CE on discrete tokens.
+  dist_ae_mt / dist_mu_mt (aekmeans only)
+          Same soft targets, acausal student: the masked transformer
+          (run_masked_transformer_mc_maze.py, config VQ_MT_CONFIG, default v4)
+          with the counts in its loss replaced by the teacher rates. Tests
+          whether distillation also lifts the strongest non-distilled model.
 
 Training (out / inout): cross-entropy on the next token. Checkpoint selected by
 val Poisson NLL of the mixture rates (the quantity co-bps scores).
@@ -56,8 +61,9 @@ import torch.nn as nn
 from run_ar_transformer_mc_maze import (
     CONFIGS, ARTransformer, poisson_nll_elementwise, shift_right,
 )
+from run_masked_transformer_mc_maze import CONFIGS as MT_CONFIGS, MaskedTransformer
 
-DATASET_NAME = "mc_maze"
+from nlb_dataset import DATASET_NAME
 BIN_SIZE_MS = 5
 PHASE = "val"
 OUTPUT_KEY = DATASET_NAME
@@ -77,6 +83,7 @@ VQVAE_EPOCHS = int(os.getenv("VQVAE_EPOCHS", "400"))
 VQVAE_LR = C["lr"]  # 1e-3 stalled at the null heldout NLL; the AR baseline's lr learns
 CD_P = 0.3  # coordinated-dropout rate on heldin inputs
 CODE_DIM = 32  # low-dim lookup space
+MT_CONFIG = os.getenv("VQ_MT_CONFIG", "v4")
 VQVAE_WARMUP_FRAC = 0.5  # epochs as a plain autoencoder before the codebook is k-means-initialized
 COMMIT_BETA = 0.25
 EMA_DECAY = 0.99
@@ -125,12 +132,12 @@ def prototype_rates(z, counts, K, alpha):
     return (sums + alpha * prior) / (cnt + alpha)
 
 
-def cosine_schedule(opt, total_steps):
+def cosine_schedule(opt, total_steps, cfg=C):
     def lr_mul(step):
-        if step < C["warmup"]:
-            return step / max(1, C["warmup"])
-        p = min(1.0, (step - C["warmup"]) / max(1, total_steps - C["warmup"]))
-        floor = C["min_lr"] / C["lr"]
+        if step < cfg["warmup"]:
+            return step / max(1, cfg["warmup"])
+        p = min(1.0, (step - cfg["warmup"]) / max(1, total_steps - cfg["warmup"]))
+        floor = cfg["min_lr"] / cfg["lr"]
         return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * p))
     return torch.optim.lr_scheduler.LambdaLR(opt, lr_mul)
 
@@ -380,6 +387,56 @@ def train_student(mode, x_all, target, y_all, tr_idx, val_idx, x_eval, device):
         return model(shift_right(x_all)).cpu().numpy(), model(shift_right(x_eval)).cpu().numpy()
 
 
+def train_mt_student(mode, x_all, target, y_all, tr_idx, val_idx, x_eval, device):
+    """Masked transformer (acausal) fit to soft targets: the training loop of
+    run_masked_transformer_mc_maze.py with the counts in the loss replaced by teacher rates
+    (masked heldin entries + all heldout). Checkpoint by val Poisson NLL against the real
+    counts, unmasked input, as in that script. Returns numpy rates."""
+    torch.manual_seed(TORCH_SEED)
+    M = MT_CONFIGS[MT_CONFIG]
+    n_heldin, n_out, T = x_all.shape[2], y_all.shape[2], x_all.shape[1]
+    model = MaskedTransformer(n_heldin, n_out, T, M["d_model"], M["n_layers"], M["n_heads"],
+                              M["ffn"], M["dropout"]).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=M["lr"], weight_decay=M["wd"])
+    bs, epochs = M["batch"], M["epochs"]
+    n_batches = int(np.ceil(len(tr_idx) / bs))
+    sched = cosine_schedule(opt, n_batches * epochs, M)
+    x_val, y_val = x_all[val_idx], y_all[val_idx]
+    best, best_state = float("inf"), None
+    for epoch in range(epochs):
+        model.train()
+        perm = tr_idx[torch.randperm(len(tr_idx), device=device)]
+        tl = 0.0
+        for b in range(n_batches):
+            idx = perm[b * bs:(b + 1) * bs]
+            x, tgt = x_all[idx], target[idx]
+            keep = (torch.rand_like(x) >= M["mask_rate"]).float()
+            rates = model(x * keep)
+            miss = 1.0 - keep
+            l_hi = (poisson_nll_elementwise(rates[:, :, :n_heldin], tgt[:, :, :n_heldin]) * miss).sum() / miss.sum().clamp(min=1.0)
+            l_ho = poisson_nll_elementwise(rates[:, :, n_heldin:], tgt[:, :, n_heldin:]).mean()
+            loss = l_hi + l_ho
+            opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            sched.step()
+            tl += loss.item() * len(idx)
+        model.eval()
+        with torch.no_grad():
+            val_nll = poisson_nll_elementwise(model(x_val), y_val).mean().item()
+        if val_nll < best:
+            best = val_nll
+            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+        if epoch % 10 == 0 or epoch == epochs - 1:
+            print(f"[{mode}] epoch {epoch:3d}  train_loss {tl/len(tr_idx):.4f}  val_nll {val_nll:.4f}  "
+                  f"best {best:.4f}  lr {opt.param_groups[0]['lr']:.2e}", flush=True)
+    model.load_state_dict(best_state)
+    model.eval()
+    with torch.no_grad():
+        return model(x_all).cpu().numpy(), model(x_eval).cpu().numpy()
+
+
 def main():
     np.random.seed(SEED)
     torch.manual_seed(TORCH_SEED)
@@ -443,7 +500,9 @@ def main():
 
         for mode in MODES:
             tag = (f"vq_{mode}_k{K}" + ("" if TOKENIZER == "kmeans" else f"_{TOKENIZER}")
-                   + ("" if CONFIG == "v1" else f"_{CONFIG}") + ("" if TORCH_SEED == 0 else f"_s{TORCH_SEED}"))
+                   + ("" if CONFIG == "v1" else f"_{CONFIG}")
+                   + ("" if not mode.endswith("_mt") or MT_CONFIG == "v4" else f"_mt{MT_CONFIG}")
+                   + ("" if TORCH_SEED == 0 else f"_s{TORCH_SEED}"))
             path = DIR / f"{OUTPUT_KEY}_{tag}_output_{PHASE}.h5"
             if mode == "lookup":
                 tr, ev = mu[z_train].cpu().numpy(), mu[z_eval].cpu().numpy()
@@ -458,6 +517,11 @@ def main():
                     raise ValueError(f"{mode} needs VQ_TOKENIZER=aekmeans")
                 target = teacher if mode == "dist_ae" else mu[z_train]
                 tr, ev = train_student(mode, xt, target, yt, tr_idx, val_idx, xe, device)
+            elif mode in ("dist_ae_mt", "dist_mu_mt"):
+                if TOKENIZER != "aekmeans":
+                    raise ValueError(f"{mode} needs VQ_TOKENIZER=aekmeans")
+                target = teacher if mode == "dist_ae_mt" else mu[z_train]
+                tr, ev = train_mt_student(mode, xt, target, yt, tr_idx, val_idx, xe, device)
             else:
                 raise ValueError(f"unknown VQ_MODE {mode}")
             write_h5(path, tr, ev, n_heldin)

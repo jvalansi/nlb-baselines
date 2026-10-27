@@ -16,15 +16,14 @@ import numpy as np
 from nlb_tools.make_tensors import make_eval_input_tensors, make_train_input_tensors
 from nlb_tools.nwb_interface import NWBDataset
 
-DATASET_NAME = "mc_maze"
+from nlb_dataset import DATASET_NAME, DATAPATH, NWB_PREFIX
 BIN_SIZE_MS = 5
-DATAPATH = Path(__file__).resolve().parents[1] / "data" / "000128" / "sub-Jenkins"
 OUTPATH = Path(__file__).resolve().parents[1] / "data" / f"{DATASET_NAME}_{BIN_SIZE_MS}ms.npz"
 
 
 def main():
     print(f"Loading NWB from {DATAPATH} ...")
-    ds = NWBDataset(str(DATAPATH), "*full", skip_fields=[
+    ds = NWBDataset(str(DATAPATH), NWB_PREFIX, skip_fields=[
         "hand_pos", "cursor_pos", "eye_pos",
         "muscle_vel", "muscle_len", "joint_vel", "joint_ang", "force",
     ])

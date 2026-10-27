@@ -19,6 +19,14 @@ Eval:
   - co-bps + vel R² via nlb_tools.evaluation.evaluate.
 
 Config chosen by env var MT_CONFIG (default v1).
+
+Training target (MT_TARGET), the control for prototype distillation (dist_mu_mt in
+run_vq_ar_transformer_mc_maze.py):
+  counts  (default) the spike counts.
+  self    self-distillation: train on counts first, then a fresh model of the same
+          config on that teacher's rates.
+  smooth  counts Gaussian-smoothed in time (sd MT_SMOOTH_MS, default 50 ms, acausal).
+Checkpoints are always selected by val Poisson NLL against the real counts.
 """
 import math
 import os
@@ -26,10 +34,11 @@ from pathlib import Path
 
 import h5py
 import numpy as np
+from scipy.ndimage import gaussian_filter1d
 import torch
 import torch.nn as nn
 
-DATASET_NAME = "mc_maze"
+from nlb_dataset import DATASET_NAME
 BIN_SIZE_MS = 5
 PHASE = "val"
 BINSUF = "" if BIN_SIZE_MS == 5 else f"_{BIN_SIZE_MS}"
@@ -56,10 +65,16 @@ DROPOUT, MASK_RATE = C["dropout"], C["mask_rate"]
 LR, WD, BATCH_SIZE, EPOCHS = C["lr"], C["wd"], C["batch"], C["epochs"]
 WARMUP, MIN_LR = C["warmup"], C["min_lr"]
 VAL_SPLIT = 0.1
-SEED = 0
+SEED = 0  # val split
+TORCH_SEED = int(os.getenv("MT_SEED", "0"))  # init, masks, batch order; split stays fixed
+TARGET = os.getenv("MT_TARGET", "counts")
+SMOOTH_MS = float(os.getenv("MT_SMOOTH_MS", "50"))
+if TARGET not in ("counts", "self", "smooth"):
+    raise ValueError(f"unknown MT_TARGET {TARGET}")
+TARGET_TAG = {"counts": "", "self": "_self", "smooth": f"_smooth{SMOOTH_MS:g}"}[TARGET]
 
 NPZPATH = Path(__file__).resolve().parents[1] / "data" / f"{DATASET_NAME}_{BIN_SIZE_MS}ms.npz"
-SAVEPATH = Path(__file__).resolve().parents[1] / "outputs" / f"{OUTPUT_KEY}_mt_{CONFIG}_output_{PHASE}.h5"
+SAVEPATH = Path(__file__).resolve().parents[1] / "outputs" / f"{OUTPUT_KEY}_mt_{CONFIG}{TARGET_TAG}{'' if TORCH_SEED == 0 else f'_s{TORCH_SEED}'}_output_{PHASE}.h5"
 
 
 class MaskedTransformer(nn.Module):
@@ -86,7 +101,7 @@ def poisson_nll_elementwise(rates, spikes, eps=1e-8):
 
 
 def main():
-    torch.manual_seed(SEED)
+    torch.manual_seed(TORCH_SEED)
     np.random.seed(SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"device: {device}")
@@ -115,66 +130,82 @@ def main():
 
     print(f"config={CONFIG} d={D_MODEL} L={N_LAYERS} H={N_HEADS} ffn={FFN} drop={DROPOUT} "
           f"mask={MASK_RATE} lr={LR} wd={WD} bs={BATCH_SIZE} ep={EPOCHS}")
-    model = MaskedTransformer(n_heldin, n_out, T, D_MODEL, N_LAYERS, N_HEADS, FFN, DROPOUT).to(device)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"params: {n_params/1e6:.2f}M")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
-    n_batches = int(np.ceil(len(tr_idx) / BATCH_SIZE))
-    total_steps = n_batches * EPOCHS
+    def fit(tgt_tr, tag):
+        model = MaskedTransformer(n_heldin, n_out, T, D_MODEL, N_LAYERS, N_HEADS, FFN, DROPOUT).to(device)
+        n_params = sum(p.numel() for p in model.parameters())
+        print(f"params: {n_params/1e6:.2f}M")
 
-    def lr_mul(step):
-        if step < WARMUP:
-            return step / max(1, WARMUP)
-        progress = min(1.0, (step - WARMUP) / max(1, total_steps - WARMUP))
-        floor = MIN_LR / LR
-        return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
+        opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=WD)
+        n_batches = int(np.ceil(len(tr_idx) / BATCH_SIZE))
+        total_steps = n_batches * EPOCHS
 
-    sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_mul)
+        def lr_mul(step):
+            if step < WARMUP:
+                return step / max(1, WARMUP)
+            progress = min(1.0, (step - WARMUP) / max(1, total_steps - WARMUP))
+            floor = MIN_LR / LR
+            return floor + (1.0 - floor) * 0.5 * (1.0 + math.cos(math.pi * progress))
 
-    best_val = float("inf")
-    best_state = None
-    step = 0
-    for epoch in range(EPOCHS):
-        model.train()
-        perm_e = torch.randperm(len(tr_idx))
-        train_loss = 0.0
-        for b in range(n_batches):
-            idx = perm_e[b * BATCH_SIZE : (b + 1) * BATCH_SIZE]
-            x = x_tr[idx]
-            y = y_tr[idx]
-            keep = (torch.rand_like(x) >= MASK_RATE).float()
-            rates = model(x * keep)
-            hi_err = poisson_nll_elementwise(rates[:, :, :n_heldin], x)
-            miss = 1.0 - keep
-            denom = miss.sum().clamp(min=1.0)
-            l_hi = (hi_err * miss).sum() / denom
-            l_ho = poisson_nll_elementwise(rates[:, :, n_heldin:], y[:, :, n_heldin:]).mean()
-            loss = l_hi + l_ho
-            opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
-            sched.step()
-            train_loss += loss.item() * len(idx)
-            step += 1
-        train_loss /= len(tr_idx)
+        sched = torch.optim.lr_scheduler.LambdaLR(opt, lr_mul)
 
+        best_val = float("inf")
+        best_state = None
+        step = 0
+        for epoch in range(EPOCHS):
+            model.train()
+            perm_e = torch.randperm(len(tr_idx))
+            train_loss = 0.0
+            for b in range(n_batches):
+                idx = perm_e[b * BATCH_SIZE : (b + 1) * BATCH_SIZE]
+                x = x_tr[idx]
+                y = tgt_tr[idx]
+                keep = (torch.rand_like(x) >= MASK_RATE).float()
+                rates = model(x * keep)
+                hi_err = poisson_nll_elementwise(rates[:, :, :n_heldin], y[:, :, :n_heldin])
+                miss = 1.0 - keep
+                denom = miss.sum().clamp(min=1.0)
+                l_hi = (hi_err * miss).sum() / denom
+                l_ho = poisson_nll_elementwise(rates[:, :, n_heldin:], y[:, :, n_heldin:]).mean()
+                loss = l_hi + l_ho
+                opt.zero_grad()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+                sched.step()
+                train_loss += loss.item() * len(idx)
+                step += 1
+            train_loss /= len(tr_idx)
+
+            model.eval()
+            with torch.no_grad():
+                val_rates = model(x_val)
+                val_hi = poisson_nll_elementwise(val_rates[:, :, :n_heldin], x_val).mean()
+                val_ho = poisson_nll_elementwise(val_rates[:, :, n_heldin:], y_val[:, :, n_heldin:]).mean()
+                val_loss = (val_hi + val_ho).item()
+            if val_loss < best_val:
+                best_val = val_loss
+                best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            if epoch % 10 == 0 or epoch == EPOCHS - 1:
+                print(f"[{tag}] epoch {epoch:3d}  train {train_loss:.4f}  val {val_loss:.4f}  "
+                      f"best {best_val:.4f}  lr {opt.param_groups[0]['lr']:.2e}")
+
+        model.load_state_dict(best_state)
         model.eval()
-        with torch.no_grad():
-            val_rates = model(x_val)
-            val_hi = poisson_nll_elementwise(val_rates[:, :, :n_heldin], x_val).mean()
-            val_ho = poisson_nll_elementwise(val_rates[:, :, n_heldin:], y_val[:, :, n_heldin:]).mean()
-            val_loss = (val_hi + val_ho).item()
-        if val_loss < best_val:
-            best_val = val_loss
-            best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
-        if epoch % 10 == 0 or epoch == EPOCHS - 1:
-            print(f"epoch {epoch:3d}  train {train_loss:.4f}  val {val_loss:.4f}  "
-                  f"best {best_val:.4f}  lr {opt.param_groups[0]['lr']:.2e}")
+        return model
 
-    model.load_state_dict(best_state)
-    model.eval()
+    if TARGET == "counts":
+        model = fit(y_tr, "counts")
+    elif TARGET == "smooth":
+        sm = gaussian_filter1d(y_train, SMOOTH_MS / BIN_SIZE_MS, axis=1).astype(np.float32)
+        model = fit(torch.from_numpy(sm[tr_idx]).to(device), f"smooth{SMOOTH_MS:g}")
+    else:  # self
+        teacher = fit(y_tr, "teacher")
+        with torch.no_grad():
+            tgt = teacher(x_tr)
+        del teacher
+        model = fit(tgt, "self")
+
 
     with torch.no_grad():
         train_rates = model(torch.from_numpy(x_train).to(device)).cpu().numpy()

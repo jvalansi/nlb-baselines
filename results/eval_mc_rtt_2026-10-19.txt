@@ -1,0 +1,17 @@
+Loading NWB from data/000129/sub-Indy ...
+Found 12 h5 files
+
+config             co-bps    vel R2
+-------------------------------------
+mt_v4              0.1383    0.2919
+mt_v4_s1           0.1374    0.3328
+mt_v4_s2           0.1342    0.2898
+mt_v4_self         0.1217    0.2950
+mt_v4_self_s1      0.1185    0.3018
+mt_v4_self_s2      0.1188    0.2855
+vq_cont_k256_aekmeans    0.1425    0.2656
+vq_cont_k256_aekmeans_s1    0.1448    0.2872
+vq_cont_k256_aekmeans_s2    0.1367    0.2824
+vq_dist_mu_mt_k256_aekmeans    0.1560    0.3327
+vq_dist_mu_mt_k256_aekmeans_s1    0.1660    0.3675
+vq_dist_mu_mt_k256_aekmeans_s2    0.1626    0.3968
