@@ -391,7 +391,8 @@ def train_mt_student(mode, x_all, target, y_all, tr_idx, val_idx, x_eval, device
     """Masked transformer (acausal) fit to soft targets: the training loop of
     run_masked_transformer_mc_maze.py with the counts in the loss replaced by teacher rates
     (masked heldin entries + all heldout). Checkpoint by val Poisson NLL against the real
-    counts, unmasked input, as in that script. Returns numpy rates."""
+    counts, unmasked input, with that script's criterion (mean heldin + mean heldout NLL;
+    before 2026-10-27 this used the NLL pooled over all neurons). Returns numpy rates."""
     torch.manual_seed(TORCH_SEED)
     M = MT_CONFIGS[MT_CONFIG]
     n_heldin, n_out, T = x_all.shape[2], y_all.shape[2], x_all.shape[1]
@@ -424,7 +425,10 @@ def train_mt_student(mode, x_all, target, y_all, tr_idx, val_idx, x_eval, device
             tl += loss.item() * len(idx)
         model.eval()
         with torch.no_grad():
-            val_nll = poisson_nll_elementwise(model(x_val), y_val).mean().item()
+            # same criterion as run_masked_transformer_mc_maze.py: heldin and heldout means summed
+            val_rates = model(x_val)
+            val_nll = (poisson_nll_elementwise(val_rates[:, :, :n_heldin], y_val[:, :, :n_heldin]).mean()
+                       + poisson_nll_elementwise(val_rates[:, :, n_heldin:], y_val[:, :, n_heldin:]).mean()).item()
         if val_nll < best:
             best = val_nll
             best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}

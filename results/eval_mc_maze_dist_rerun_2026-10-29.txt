@@ -1,0 +1,14 @@
+# dist_*_mt rerun with matched checkpoint criterion (mean heldin + mean heldout NLL), 2026-10-29 PT; NLB val; vq_cont = unquantized AE teacher; unsuffixed = seed 0
+Found 9 h5 files
+
+config             co-bps    vel R2
+-------------------------------------
+vq_cont_k256_aekmeans    0.2866    0.8366
+vq_cont_k256_aekmeans_s1    0.2881    0.8395
+vq_cont_k256_aekmeans_s2    0.2869    0.8347
+vq_dist_ae_mt_k256_aekmeans    0.3038    0.8823
+vq_dist_ae_mt_k256_aekmeans_s1    0.3108    0.8829
+vq_dist_ae_mt_k256_aekmeans_s2    0.3047    0.8789
+vq_dist_mu_mt_k256_aekmeans    0.3313    0.8829
+vq_dist_mu_mt_k256_aekmeans_s1    0.3307    0.8829
+vq_dist_mu_mt_k256_aekmeans_s2    0.3288    0.8825

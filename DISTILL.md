@@ -8,7 +8,7 @@
 2. Is it the *prototype* teacher that matters, or would any soft target (the model's own rates, temporally smoothed counts) do the same?
 3. Does it hold on a second dataset and a second monkey?
 
-Short answer: yes, the prototype teacher specifically, and yes. On MC_Maze the masked transformer goes from **0.3139 to 0.3306 co-bps** (+0.017) and vel R² from 0.823 to 0.883. On MC_RTT, with the same configs and no retuning, it goes from **0.1366 to 0.1615** (+0.025). Self-distillation and smoothed counts both *hurt*.
+Short answer: yes, the prototype teacher specifically, and yes. On MC_Maze the masked transformer goes from **0.3139 to 0.3303 co-bps** (+0.016) and vel R² from 0.823 to 0.883. On MC_RTT, with the same configs and no retuning, it goes from **0.1366 to 0.1620** (+0.025). Self-distillation and smoothed counts both *hurt*.
 
 All numbers are on the NLB **validation** split (5 ms bins), scored with `nlb_tools.evaluation.evaluate`, mean ± std over 3 seeds (init, masks and batch order; the val split is held fixed).
 
@@ -32,8 +32,8 @@ All numbers are on the NLB **validation** split (5 ms bins), scored with `nlb_to
 | Masked transformer v4 trained on | co-bps (3 seeds) | vel R² |
 |---|---:|---:|
 | counts | 0.3139 ± 0.0018 | 0.823 |
-| **prototype rates `mu[z_t]` (`dist_mu_mt`)** | **0.3306 ± 0.0015** | **0.883** |
-| autoencoder rates (`dist_ae_mt`) | 0.3063 ± 0.0040 | 0.881 |
+| **prototype rates `mu[z_t]` (`dist_mu_mt`)** | **0.3303 ± 0.0013** | **0.883** |
+| autoencoder rates (`dist_ae_mt`) | 0.3064 ± 0.0035 | 0.881 |
 | own rates (self-distillation) | 0.2961 ± 0.0032 | 0.853 |
 | counts smoothed, σ = 50 ms | 0.2646 ± 0.0094 | 0.726 |
 | *teacher: autoencoder, unquantized* | *0.2872 ± 0.0008* | *0.837* |
@@ -45,21 +45,21 @@ The same comparison on the small causal transformer (from TOKENS.md): counts 0.2
 | Masked transformer v4 trained on | co-bps (3 seeds) | vel R² |
 |---|---:|---:|
 | counts | 0.1366 ± 0.0021 | 0.305 |
-| **prototype rates `mu[z_t]` (`dist_mu_mt`)** | **0.1615 ± 0.0051** | **0.366** |
+| **prototype rates `mu[z_t]` (`dist_mu_mt`)** | **0.1620 ± 0.0046** | **0.365** |
 | own rates (self-distillation) | 0.1197 ± 0.0018 | 0.294 |
 | *teacher: autoencoder, unquantized* | *0.1413 ± 0.0041* | *0.278* |
 
-Per-seed scores: [`results/`](results/) (`eval_all_2026-10-15.txt`, `eval_all_2026-10-16.txt`, `eval_mc_rtt_2026-10-19.txt`).
+Per-seed scores: [`results/`](results/) (`eval_all_2026-10-15.txt`, `eval_all_2026-10-16.txt`, `eval_mc_rtt_2026-10-19.txt`; `dist_*_mt` rows from the matched-criterion rerun, `eval_mc_maze_dist_rerun_2026-10-29.txt`, `eval_mc_rtt_dist_rerun_2026-10-29.txt`).
 
 ## What it shows
 
-1. **Prototype distillation lifts the strongest model, not only the weak one.** +0.017 co-bps and +0.06 vel R² on the masked transformer, with a seed spread of ~0.002. On the causal transformer it was +0.041. The gain shrinks as the student gets stronger, but does not vanish.
+1. **Prototype distillation lifts the strongest model, not only the weak one.** +0.016 co-bps and +0.06 vel R² on the masked transformer, with a seed spread of ~0.002. On the causal transformer it was +0.041. The gain shrinks as the student gets stronger, but does not vanish.
 
-2. **It is the prototype teacher, not soft targets in general.** Two generic soft targets were tested on the same student, and both lose to counts. Self-distillation costs 0.018 co-bps (though it raises vel R²). Temporal smoothing costs 0.049. So the gain does not come from "any smoother target regularizes". The unquantized autoencoder's rates also lose to counts on the masked transformer (−0.008), while the quantized ones win (+0.017). Quantization is what turns the teacher from a worse target into a better one.
+2. **It is the prototype teacher, not soft targets in general.** Two generic soft targets were tested on the same student, and both lose to counts. Self-distillation costs 0.018 co-bps (though it raises vel R²). Temporal smoothing costs 0.049. So the gain does not come from "any smoother target regularizes". The unquantized autoencoder's rates also lose to counts on the masked transformer (−0.008), while the quantized ones win (+0.016). Quantization is what turns the teacher from a worse target into a better one.
 
 3. **The student beats its teacher.** On both datasets `dist_mu_mt` beats the autoencoder that produced its targets by a wide margin (0.331 vs 0.287 on MC_Maze, 0.162 vs 0.141 on MC_RTT). The student isn't copying a strong model; it is learning from a better-conditioned target than raw 5 ms counts.
 
-4. **It replicates on a second dataset and monkey, with a larger gain.** MC_RTT has no trials, no maze and a different subject and array. With every hyperparameter carried over from MC_Maze, `dist_mu_mt` gains +0.025 co-bps there, against +0.017 on MC_Maze. Self-distillation again hurts.
+4. **It replicates on a second dataset and monkey, with a larger gain.** MC_RTT has no trials, no maze and a different subject and array. With every hyperparameter carried over from MC_Maze, `dist_mu_mt` gains +0.025 co-bps there, against +0.016 on MC_Maze. Self-distillation again hurts.
 
 **Why quantized targets distill better is untested.** One candidate: a prototype is a mean over many training bins in the same population state. That averages out per-bin Poisson noise much more than one model's rate estimate does, while staying sharp across states, which temporal smoothing doesn't.
 
@@ -81,7 +81,7 @@ Placement, for context only (test-phase [EvalAI](https://eval.ai/web/challenges/
 - MC_RTT 5 ms: S5 0.2296, AutoLFADS 0.1868, NDT 0.1749.
 - MC_Maze 5 ms: STNDT ensemble 0.3862, NDT 0.3229.
 
-Our 0.1615 (MC_RTT val) sits below test NDT, and our 0.3306 (MC_Maze val) above it. The claim is a relative gain over a matched baseline, not a state-of-the-art number.
+Our 0.1620 (MC_RTT val) sits below test NDT, and our 0.3303 (MC_Maze val) above it. The claim is a relative gain over a matched baseline, not a state-of-the-art number.
 
 ## Limits
 
@@ -91,7 +91,7 @@ Our 0.1615 (MC_RTT val) sits below test NDT, and our 0.3306 (MC_Maze val) above 
 - Two-stage training: the student's total budget includes the teacher's autoencoder run; the counts baseline gets no equivalent. Self-distillation is matched on this (two full runs) and still loses.
 - Not run on MC_RTT: `dist_ae_mt`, smoothed counts, and the causal students.
 - One bin size (5 ms), K = 256 only for the masked-transformer rows.
-- **Checkpoint criterion differs** (found in code review, 2026-10-27). The counts / self / smooth runs pick the best epoch by mean heldin NLL + mean heldout NLL. The `dist_*_mt` runs pick by NLL pooled over all 182 neurons, which weights heldout less. This is a confound for the headline gap until the `dist_*_mt` rows are rerun with the same criterion.
+- **Checkpoint criterion, resolved 2026-10-29.** The first `dist_*_mt` runs picked the best epoch by NLL pooled over all 182 neurons, while the counts / self / smooth runs use mean heldin + mean heldout NLL. All `dist_*_mt` rows above are from a rerun with the matched criterion: `dist_mu_mt` moved 0.3306 → 0.3303 on MC_Maze and 0.1615 → 0.1620 on MC_RTT, so the confound does not explain the gap.
 - The self-distillation teacher's rates are taken on unmasked input. At heldin positions they may partly track the observed count, which makes this a weaker control than intended. Untested.
 
 ## Reproduce
